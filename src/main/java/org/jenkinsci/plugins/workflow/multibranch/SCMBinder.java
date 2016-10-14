@@ -24,6 +24,7 @@
 
 package org.jenkinsci.plugins.workflow.multibranch;
 
+import hudson.EnvVars;
 import hudson.Extension;
 import hudson.model.Action;
 import hudson.model.Descriptor;
@@ -31,7 +32,12 @@ import hudson.model.DescriptorVisibilityFilter;
 import hudson.model.ItemGroup;
 import hudson.model.Queue;
 import hudson.model.TaskListener;
+import hudson.plugins.git.GitSCM;
+import hudson.plugins.git.extensions.GitSCMExtension;
+import hudson.plugins.git.extensions.impl.CloneOption;
 import hudson.scm.SCM;
+
+import java.io.File;
 import java.util.List;
 import jenkins.branch.Branch;
 import jenkins.scm.api.SCMHead;
@@ -82,8 +88,42 @@ class SCMBinder extends FlowDefinition {
             // Build might fail later anyway, but reason should become clear: for example, branch was deleted before indexing could run.
             scm = branch.getScm();
         }
+        if (scm instanceof GitSCM) {
+            shallowReferenceClone((GitSCM) scm, build, listener);
+        }
         return new CpsScmFlowDefinition(scm, WorkflowBranchProjectFactory.SCRIPT).create(handle, listener, actions);
     }
+
+    /*
+     * Hack around JENKINS-33273 for GIT
+     */
+    protected void shallowReferenceClone(GitSCM git, WorkflowRun build, TaskListener listener) throws Exception {
+        EnvVars env = build.getEnvironment(listener);
+        String local_reference = null;
+
+        // we do not manage the ref repos and their up-to-date-ness here at all. use your own tactics.
+        if (env.containsKey("REFERENCE_REPO")) {
+            // let projects set absolute reference repos
+            local_reference = env.get("REFERENCE_REPO");
+        } else if (env.containsKey("REFERENCE_REPO_ROOT")) {
+            // or set it at a higher level
+            String root = env.get("REFERENCE_REPO_ROOT");
+            String url = git.getUserRemoteConfigs().get(0).getUrl();
+            // and use some path-safe location
+            local_reference = root + url.replaceAll("\\W+", "");
+        }
+        String ref_path = "";
+        if (local_reference == null) {
+            listener.getLogger().println("No reference repo configured");
+        } else if (!(new File(local_reference)).exists()) {
+            listener.getLogger().println("Could not find reference repo at " + local_reference);
+        } else {
+            listener.getLogger().println("Using reference repo at " + local_reference);
+            ref_path = local_reference;
+        }
+        git.getExtensions().add(new CloneOption(true, ref_path, 60));
+    }
+
 
     @Extension public static class DescriptorImpl extends FlowDefinitionDescriptor {
 
